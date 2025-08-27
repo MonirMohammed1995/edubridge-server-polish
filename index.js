@@ -7,12 +7,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 /* ---------- Middleware ---------- */
-app.use(
-  cors({
-    origin: '*', // production e specific origin use koro
-    credentials: false,
-  })
-);
+app.use(cors({ origin: '*', credentials: false }));
 app.use(express.json());
 
 /* ---------- LANGUAGE CATEGORIES ---------- */
@@ -31,7 +26,6 @@ const languageCategories = [
   { title: "Korean", path: "korean", icon: "TbLanguageHiragana" },
 ];
 
-// Categories API
 app.get('/categories', (_req, res) => res.send(languageCategories));
 
 /* ---------- MongoDB Setup ---------- */
@@ -41,7 +35,6 @@ if (!process.env.DB_USER || !process.env.DB_PASS) {
 }
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@phlearner.tk4afnk.mongodb.net/?retryWrites=true&w=majority`;
-
 const client = new MongoClient(uri, {
   serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true },
 });
@@ -56,16 +49,14 @@ async function run() {
     const bookingCollection = db.collection('bookings');
     const userCollection = db.collection('users');
 
-    // helpful index (idempotent)
     userCollection.createIndex({ email: 1 }, { unique: true }).catch(() => {});
 
     /* ---------- TUTOR ROUTES ---------- */
     app.post('/tutors', async (req, res) => {
       try {
         const { tutorName, language, price, description, image } = req.body;
-        if (!tutorName || !language || price == null) {
+        if (!tutorName || !language || price == null)
           return res.status(400).send({ success: false, error: 'Missing required fields' });
-        }
 
         const newTutor = {
           tutorName,
@@ -97,9 +88,7 @@ async function run() {
 
     app.get('/tutors/:id', async (req, res) => {
       const { id } = req.params;
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).send({ success: false, error: 'Invalid ID format' });
-      }
+      if (!ObjectId.isValid(id)) return res.status(400).send({ success: false, error: 'Invalid ID format' });
       try {
         const tutor = await tutorCollection.findOne({ _id: new ObjectId(id) });
         if (!tutor) return res.status(404).send({ success: false, error: 'Tutor not found' });
@@ -110,21 +99,55 @@ async function run() {
       }
     });
 
+    // Update tutor
+    app.patch('/tutors/:id', async (req, res) => {
+      const { id } = req.params;
+      const updateFields = req.body;
+
+      if (!ObjectId.isValid(id)) return res.status(400).send({ success: false, error: 'Invalid ID format' });
+
+      try {
+        const result = await tutorCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateFields }
+        );
+
+        if (result.matchedCount === 0)
+          return res.status(404).send({ success: false, error: 'Tutor not found' });
+
+        res.send({ success: true, message: 'Tutor updated successfully', modifiedCount: result.modifiedCount });
+      } catch (error) {
+        console.error('Update tutor error:', error);
+        res.status(500).send({ success: false, error: 'Failed to update tutor' });
+      }
+    });
+
+    // Delete tutor
+    app.delete('/tutors/:id', async (req, res) => {
+      const { id } = req.params;
+      if (!ObjectId.isValid(id)) return res.status(400).send({ success: false, error: 'Invalid ID format' });
+
+      try {
+        const result = await tutorCollection.deleteOne({ _id: new ObjectId(id) });
+        res.send({ success: true, deletedCount: result.deletedCount });
+      } catch (error) {
+        console.error('Delete tutor error:', error);
+        res.status(500).send({ success: false, error: 'Failed to delete tutor' });
+      }
+    });
+
     /* ---------- BOOKING ROUTES ---------- */
     app.post('/bookings', async (req, res) => {
       try {
         const { tutorId, userEmail, date } = req.body;
-        if (!tutorId || !userEmail || !date) {
+        if (!tutorId || !userEmail || !date)
           return res.status(400).send({ success: false, error: 'Missing required fields' });
-        }
-        if (!ObjectId.isValid(tutorId)) {
-          return res.status(400).send({ success: false, error: 'Invalid tutorId' });
-        }
+        if (!ObjectId.isValid(tutorId)) return res.status(400).send({ success: false, error: 'Invalid tutorId' });
 
         const booking = {
           tutorId: new ObjectId(tutorId),
           userEmail,
-          bookedAt: date, // expect ISO string or formatted date from frontend
+          bookedAt: date,
           reviewed: false,
           createdAt: new Date(),
         };
@@ -142,27 +165,12 @@ async function run() {
       try {
         const bookings = await bookingCollection.aggregate([
           { $match: { userEmail: email } },
-          {
-            $lookup: {
-              from: "tutors",
-              localField: "tutorId",
-              foreignField: "_id",
-              as: "tutor",
-            },
-          },
+          { $lookup: { from: "tutors", localField: "tutorId", foreignField: "_id", as: "tutor" } },
           { $unwind: "$tutor" },
-          {
-            $project: {
-              _id: 1,
-              tutorId: 1,
-              userEmail: 1,
-              bookedAt: 1,
-              reviewed: 1,
-              tutorName: "$tutor.tutorName",
-              language: "$tutor.language",
-              price: "$tutor.price",
-              image: "$tutor.image",
-            },
+          { $project: {
+              _id: 1, tutorId: 1, userEmail: 1, bookedAt: 1, reviewed: 1,
+              tutorName: "$tutor.tutorName", language: "$tutor.language", price: "$tutor.price", image: "$tutor.image"
+            }
           },
         ]).toArray();
 
@@ -173,26 +181,16 @@ async function run() {
       }
     });
 
-    // review flag + increment tutor review count
     app.patch('/bookings/reviewed/:id', async (req, res) => {
       const { id } = req.params;
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).send({ success: false, error: 'Invalid ID format' });
-      }
+      if (!ObjectId.isValid(id)) return res.status(400).send({ success: false, error: 'Invalid ID format' });
       try {
         const booking = await bookingCollection.findOne({ _id: new ObjectId(id) });
         if (!booking) return res.status(404).send({ success: false, message: 'Booking not found' });
         if (booking.reviewed) return res.status(400).send({ success: false, message: 'Already reviewed' });
 
-        await bookingCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { reviewed: true } }
-        );
-
-        await tutorCollection.updateOne(
-          { _id: booking.tutorId },
-          { $inc: { review: 1 } }
-        );
+        await bookingCollection.updateOne({ _id: new ObjectId(id) }, { $set: { reviewed: true } });
+        await tutorCollection.updateOne({ _id: booking.tutorId }, { $inc: { review: 1 } });
 
         res.send({ success: true, message: 'Booking reviewed & tutor rating updated' });
       } catch (error) {
@@ -202,26 +200,15 @@ async function run() {
     });
 
     /* ---------- USER ROUTES ---------- */
-    // Create user (idempotent by email)
     app.post('/users', async (req, res) => {
       try {
         const { name, email, role } = req.body;
-        if (!name || !email) {
-          return res.status(400).send({ success: false, error: 'Name and email are required' });
-        }
+        if (!name || !email) return res.status(400).send({ success: false, error: 'Name and email are required' });
 
         const existing = await userCollection.findOne({ email });
-        if (existing) {
-          return res.status(409).send({ success: false, message: 'User already exists' });
-        }
+        if (existing) return res.status(409).send({ success: false, message: 'User already exists' });
 
-        const result = await userCollection.insertOne({
-          name,
-          email,
-          role: (role || 'user').toLowerCase(),
-          createdAt: new Date(),
-        });
-
+        const result = await userCollection.insertOne({ name, email, role: (role || 'user').toLowerCase(), createdAt: new Date() });
         res.status(201).send({ success: true, message: 'User registered', insertedId: result.insertedId });
       } catch (error) {
         console.error('Add user error:', error);
@@ -229,7 +216,6 @@ async function run() {
       }
     });
 
-    // Get all users (⚠️ protect in production)
     app.get('/users', async (_req, res) => {
       try {
         const users = await userCollection.find().toArray();
@@ -240,7 +226,6 @@ async function run() {
       }
     });
 
-    // Get single user by email (for AuthProvider role fetch)
     app.get('/users/:email', async (req, res) => {
       try {
         const { email } = req.params;
@@ -253,24 +238,14 @@ async function run() {
       }
     });
 
-    // Update role by _id (used by ManageUsers)
     app.patch('/users/:id', async (req, res) => {
       try {
         const { id } = req.params;
         const { role } = req.body;
+        if (!ObjectId.isValid(id)) return res.status(400).send({ success: false, error: 'Invalid ID format' });
+        if (!role) return res.status(400).send({ success: false, error: 'Role is required' });
 
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({ success: false, error: 'Invalid ID format' });
-        }
-        if (!role) {
-          return res.status(400).send({ success: false, error: 'Role is required' });
-        }
-
-        const result = await userCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { role: role.toLowerCase() } }
-        );
-
+        const result = await userCollection.updateOne({ _id: new ObjectId(id) }, { $set: { role: role.toLowerCase() } });
         res.send({ success: true, modifiedCount: result.modifiedCount });
       } catch (error) {
         console.error('Update user role error:', error);
@@ -278,13 +253,10 @@ async function run() {
       }
     });
 
-    // Delete user by _id (used by ManageUsers)
     app.delete('/users/:id', async (req, res) => {
       try {
         const { id } = req.params;
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({ success: false, error: 'Invalid ID format' });
-        }
+        if (!ObjectId.isValid(id)) return res.status(400).send({ success: false, error: 'Invalid ID format' });
 
         const result = await userCollection.deleteOne({ _id: new ObjectId(id) });
         res.send({ success: true, deletedCount: result.deletedCount });
@@ -303,7 +275,6 @@ async function run() {
           userCollection.countDocuments(),
           bookingCollection.countDocuments({ reviewed: false }),
         ]);
-
         res.send({ totalTutors, totalBookings, totalUsers, pendingReviews });
       } catch (error) {
         console.error('Dashboard stats error:', error);
@@ -311,15 +282,11 @@ async function run() {
       }
     });
 
-    // Optional: healthcheck
     app.get('/health', async (_req, res) => {
-      try {
-        await db.command({ ping: 1 });
-        res.send({ ok: true });
-      } catch {
-        res.status(500).send({ ok: false });
-      }
+      try { await db.command({ ping: 1 }); res.send({ ok: true }); } 
+      catch { res.status(500).send({ ok: false }); }
     });
+
   } catch (err) {
     console.error('❌ MongoDB Connection Failed:', err);
     process.exit(1);
